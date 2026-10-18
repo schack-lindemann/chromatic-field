@@ -101,7 +101,7 @@
   // phase-exactly at the 8-second boundary, so the native loop wrap of the
   // <audio> element is mathematically seamless: the seam step is smaller
   // than ordinary sample-to-sample waveform motion.
-  const D_LOOP = 8, N_CYCLES = 16;
+  const D_LOOP = 8, N_CYCLES = 24;
   function makeToneWav(freq) {
     const rate = 44100;
     const n = D_LOOP * N_CYCLES * rate;
@@ -151,6 +151,17 @@
       a.loop = true;
       urls.push(a.src);
       await a.play();
+      // Safari (WebKit) does not honour `loop` on blob media and simply
+      // stops at the end. On compliant browsers this `ended` never fires
+      // (native loop takes over); on Safari it restarts playback from the
+      // top. The waveform is exactly periodic over the buffer, so the
+      // restart is seamless apart from the unavoidable platform gap.
+      a.addEventListener("ended", function () {
+        if (a.loop) {
+          a.currentTime = 0;
+          a.play().catch(function () {});
+        }
+      });
       return {
         type: "element",
         stop: function () { a.pause(); a.src = ""; urls.forEach(u => URL.revokeObjectURL(u)); }
