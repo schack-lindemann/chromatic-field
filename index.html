@@ -124,10 +124,16 @@
       + 0.45 * Math.sin(TWO * fb * tau)                 // detuned unison → slow beating
       + 0.12 * Math.sin(TWO * f0 * 2 * tau);           // soft octave partial
     const lfo = (tau) => 0.85 + 0.15 * Math.sin(TWO * tau / D_LOOP);  // one cycle per loop → seamless
-    for (let i = 0; i < n; i++) {
+    // The waveform is exactly periodic over D_LOOP, so render one cycle and
+    // memory-copy it for the rest — generation is near-instant even on a
+    // slow phone.
+    const cycle = new Int16Array(D_LOOP * rate);
+    for (let i = 0; i < cycle.length; i++) {
       const s = lfo(i / rate) * wave(i / rate);
-      v.setInt16(44 + i * 2, Math.max(-1, Math.min(1, s * 0.72)) * 32767, true);
+      cycle[i] = Math.max(-1, Math.min(1, s * 0.72)) * 32767;
     }
+    const pcm = new Int16Array(buf, 44, n);
+    for (let c = 0; c < N_CYCLES; c++) pcm.set(cycle, c * cycle.length);
     return URL.createObjectURL(new Blob([buf], { type: "audio/wav" }));
   }
 
