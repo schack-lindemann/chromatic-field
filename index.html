@@ -70,18 +70,18 @@
 
 <script>
 (function () {
-  // ---- Note pool: chromatic C4–C6 (25 pitches). -------------------------
-  // Phone speakers roll off below ~300 Hz, so the pool stays in the
-  // range small speakers can actually reproduce.
+  // ---- Note pool: Cmaj9 chord tones across two octaves (C4–D6). ----------
+  // Chord tones only — C E G B D — so every visitor adds a consonant
+  // voice. Kept above ~C4 because phone speakers roll off below ~300 Hz.
   const NAMES = ["C","C♯","D","D♯","E","F","F♯","G","G♯","A","A♯","B"];
-  const POOL = [];
-  for (let k = 0; k <= 24; k++) {
-    POOL.push({
+  const CHORD = [0, 4, 7, 11, 14, 16, 19, 23, 26];  // C4 E4 G4 B4 D5 · C5 E5 G5 B5 D6
+  const POOL = CHORD.map(function (k) {
+    return {
       freq: 261.6256 * Math.pow(2, k / 12),
       name: NAMES[k % 12] + (4 + Math.floor(k / 12)),
       hue: (k % 12) * 30
-    });
-  }
+    };
+  });
 
   const disc = document.getElementById("disc");
   const discHint = document.getElementById("discHint");
@@ -94,20 +94,17 @@
   let wakeLock = null;
 
   // ---- WAV generation ----------------------------------------------------
-  // One waveform function w(τ), periodic over the 8-second loop D, built so
-  // that w(0) = 0 (sines start at a zero crossing, amplitude LFO at its
-  // floor). A single long buffer comes out of it:
-  //   [ 3 s intro | 8 × 8 s loop cycles ]
-  // The intro fades in (smoothstep) and ends exactly at a loop boundary;
-  // every internal loop boundary is sample-continuous. On 'ended' the engine
-  // seeks back to the top of the loop section (t = 3 s), which is an LFO/beat
-  // phase boundary too — so the wrap is inaudible and there is no per-8 s
-  // wrap at all (a single <audio> element looping itself pauses briefly at
-  // the wrap, which is what caused the every-8-seconds cutouts).
-  const T_INTRO = 3, D_LOOP = 8, N_CYCLES = 8;
+  // One waveform function w(τ), exactly periodic over the 8-second loop D,
+  // built so that w(0) = 0 (sines start at a zero crossing). The buffer is
+  // N_CYCLES loop cycles with no fade-in — the tone starts immediately at
+  // full voice. Every component (fundamental, beat, octave, LFO) wraps
+  // phase-exactly at the 8-second boundary, so the native loop wrap of the
+  // <audio> element is mathematically seamless: the seam step is smaller
+  // than ordinary sample-to-sample waveform motion.
+  const D_LOOP = 8, N_CYCLES = 16;
   function makeToneWav(freq) {
     const rate = 44100;
-    const n = (T_INTRO + D_LOOP * N_CYCLES) * rate;
+    const n = D_LOOP * N_CYCLES * rate;
     const buf = new ArrayBuffer(44 + n * 2);
     const v = new DataView(buf);
     const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
@@ -118,10 +115,8 @@
     v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
     str(36, "data"); v.setUint32(40, n * 2, true);
     // Snap the frequency to a multiple of 1/D_LOOP and the detune to
-    // 3/D_LOOP so every component (fundamental, beat, octave, LFO) wraps
-    // phase-exactly at the 8-second boundary. The pitch shift is < 0.5 cent
-    // — imperceptible — and it makes the ended → seek-back wrap perfectly
-    // continuous, with no click even once a minute.
+    // 3/D_LOOP so the waveform is exactly periodic over D_LOOP. The pitch
+    // shift is < 0.5 cent — imperceptible.
     const f0 = Math.round(freq * D_LOOP) / D_LOOP;
     const fb = f0 + 3 / D_LOOP;
     const wave = (tau) =>
@@ -129,12 +124,8 @@
       + 0.45 * Math.sin(TWO * fb * tau)                 // detuned unison → slow beating
       + 0.12 * Math.sin(TWO * f0 * 2 * tau);           // soft octave partial
     const lfo = (tau) => 0.85 + 0.15 * Math.sin(TWO * tau / D_LOOP);  // one cycle per loop → seamless
-    const nIntro = T_INTRO * rate;
     for (let i = 0; i < n; i++) {
-      const tau = i < nIntro ? (i / rate) - T_INTRO : (i - nIntro) / rate;
-      let fade = 1;
-      if (i < nIntro) { const x = i / nIntro; fade = x * x * (3 - 2 * x); }  // smoothstep 0 → 1
-      const s = fade * lfo(tau) * wave(tau);
+      const s = lfo(i / rate) * wave(i / rate);
       v.setInt16(44 + i * 2, Math.max(-1, Math.min(1, s * 0.72)) * 32767, true);
     }
     return URL.createObjectURL(new Blob([buf], { type: "audio/wav" }));
@@ -156,25 +147,10 @@
       a = new Audio();
       a.playsInline = true;
       a.setAttribute("playsinline", "");
-      a.src = makeToneWav(note.freq);               // 3 s fade-in + 64 s of loop
+      a.src = makeToneWav(note.freq);        // exactly periodic: native loop is seamless
+      a.loop = true;
       urls.push(a.src);
       await a.play();
-      // When the long buffer ends, seek back to the top of the loop section
-      // (t = 3 s) and keep playing — no src swap, no re-decode, and the
-      // restart lands exactly on an LFO/beat phase boundary, so it is
-      // inaudible. Seeking + playing in 'ended' is allowed on iOS once the
-      // first play was user-triggered.
-      a.addEventListener("ended", function () {
-        a.currentTime = T_INTRO;
-        a.play().catch(function () {
-          // If a locked-down browser blocks it, retry at the next sign of
-          // the user: a touch, or the tab becoming visible again.
-          const retry = () => a.play().catch(() => {});
-          document.addEventListener("touchend", retry, { once: true, passive: true });
-          document.addEventListener("click", retry, { once: true });
-          document.addEventListener("visibilitychange", retry, { once: true });
-        });
-      });
       return {
         type: "element",
         stop: function () { a.pause(); a.src = ""; urls.forEach(u => URL.revokeObjectURL(u)); }
@@ -189,8 +165,7 @@
     if (ctx.state === "suspended") await ctx.resume();
 
     const master = ctx.createGain();
-    master.gain.setValueAtTime(0.0001, ctx.currentTime);                 // fade in…
-    master.gain.exponentialRampToValueAtTime(0.43, ctx.currentTime + 3); // …over 3 s
+    master.gain.value = 0.43;                          // full voice immediately — no fade-in
     const lfo = ctx.createOscillator();
     const lfoDepth = ctx.createGain();
     lfo.frequency.value = 0.125;                   // one cycle per 8-second "loop"
