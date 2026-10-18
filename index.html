@@ -74,7 +74,7 @@
   // Chord tones only — C E G B D — so every visitor adds a consonant
   // voice. Kept above ~C4 because phone speakers roll off below ~300 Hz.
   const NAMES = ["C","C♯","D","D♯","E","F","F♯","G","G♯","A","A♯","B"];
-  const CHORD = [0, 4, 7, 11, 14, 16, 19, 23, 26];  // C4 E4 G4 B4 D5 · C5 E5 G5 B5 D6
+  const CHORD = [0, 4, 7, 11, 14, 16, 18, 19, 21, 23, 26];  // C4 E4 G4 B4 D5 · C5 E5 G5 F♯5 A5 B5 D6
   const POOL = CHORD.map(function (k) {
     return {
       freq: 261.6256 * Math.pow(2, k / 12),
