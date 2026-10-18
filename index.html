@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Chromatic Field</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; }
+  body {
+    background: #06070a;
+    color: #e8e9ee;
+    font-family: system-ui, -apple-system, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 24px;
+    user-select: none;
+    overflow: hidden;
+  }
+  h1 { font-size: 15px; font-weight: 500; letter-spacing: 0.35em; text-transform: uppercase; color: #9aa0ae; margin-bottom: 6px; }
+  .sub { font-size: 12px; color: #5c6270; margin-bottom: 40px; }
+  .disc {
+    width: 170px; height: 170px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    flex-direction: column;
+    cursor: pointer;
+    transition: transform 0.4s ease;
+    background: radial-gradient(circle at 50% 38%, rgba(255,255,255,0.14), rgba(255,255,255,0.02) 60%, transparent 75%);
+    border: 1px solid rgba(255,255,255,0.12);
+    margin-bottom: 34px;
+  }
+  .disc .note { font-size: 44px; font-weight: 200; line-height: 1; }
+  .disc .hz { font-size: 11px; color: #8b93a5; margin-top: 8px; letter-spacing: 0.1em; }
+  .disc .hint { font-size: 13px; color: #b9c0cf; padding: 0 22px; line-height: 1.5; }
+  .disc.playing { animation: breathe 8s ease-in-out infinite; }
+  .disc.playing .note { animation: glow 8s ease-in-out infinite; }
+  @keyframes breathe {
+    0%, 100% { box-shadow: 0 0 40px 4px var(--halo); transform: scale(1); }
+    50% { box-shadow: 0 0 90px 18px var(--halo); transform: scale(1.05); }
+  }
+  @keyframes glow { 0%,100% { opacity: 0.85; } 50% { opacity: 1; } }
+  .btn {
+    appearance: none; border: 1px solid rgba(255,255,255,0.18);
+    background: rgba(255,255,255,0.05); color: #dfe2ea;
+    font-size: 14px; font-family: inherit;
+    padding: 12px 22px; border-radius: 999px; margin: 6px; cursor: pointer;
+  }
+  .btn:active { background: rgba(255,255,255,0.14); }
+  .status { font-size: 12px; color: #616778; margin-top: 26px; max-width: 300px; line-height: 1.6; }
+</style>
+</head>
+<body>
+  <h1>Chromatic Field</h1>
+  <div class="sub">a sound installation</div>
+
+  <div class="disc" id="disc" role="button" tabindex="0">
+    <div class="hint" id="discHint">Tap to receive<br>your sound</div>
+  </div>
+
+  <div>
+    <button class="btn" id="reroll" style="display:none">Receive another sound</button>
+    <button class="btn" id="leave" style="display:none">Leave quietly</button>
+  </div>
+
+  <div class="status" id="status"></div>
+
+<script>
+(function () {
+  // ---- Note pool: chromatic C4–C6 (25 pitches). -------------------------
+  // Phone speakers roll off below ~300 Hz, so the pool stays in the
+  // range small speakers can actually reproduce.
+  const NAMES = ["C","C♯","D","D♯","E","F","F♯","G","G♯","A","A♯","B"];
+  const POOL = [];
+  for (let k = 0; k <= 24; k++) {
+    POOL.push({
+      freq: 261.6256 * Math.pow(2, k / 12),
+      name: NAMES[k % 12] + (4 + Math.floor(k / 12)),
+      hue: (k % 12) * 30
+    });
+  }
+
+  const disc = document.getElementById("disc");
+  const discHint = document.getElementById("discHint");
+  const reroll = document.getElementById("reroll");
+  const leave = document.getElementById("leave");
+  const status = document.getElementById("status");
+
+  let engine = null;
+  let current = null;
+  let wakeLock = null;
+
+  // ---- WAV generation ----------------------------------------------------
+  // One waveform function w(τ), periodic over the 8-second loop D, built so
+  // that w(0) = 0 (sines start at a zero crossing, amplitude LFO at its
+  // floor). Two buffers come out of it:
+  //   intro (3 s): w evaluated at τ ∈ [-3, 0) times a smooth fade-in ramp,
+  //                ending exactly where the loop begins.
+  //   loop  (8 s): w over τ ∈ [0, D), seamless at the wrap point.
+  // Both sides of the intro → loop boundary sit at zero amplitude, so the
+  // hand-off is click-free even if playback gaps for a few milliseconds.
+  function makeToneWav(freq, kind) {
+    const rate = 44100, D = 8, T = 3;
+    const n = (kind === "intro" ? T : D) * rate;
+    const buf = new ArrayBuffer(44 + n * 2);
+    const v = new DataView(buf);
+    const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+    const TWO = Math.PI * 2;
+    str(0, "RIFF"); v.setUint32(4, 36 + n * 2, true); str(8, "WAVE");
+    str(12, "fmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true);
+    v.setUint16(22, 1, true); v.setUint32(24, rate, true);
+    v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+    str(36, "data"); v.setUint32(40, n * 2, true);
+    const wave = (tau) =>
+        0.55 * Math.sin(TWO * freq * tau)              // fundamental
+      + 0.45 * Math.sin(TWO * (freq + 0.35) * tau)     // detuned unison → slow beating
+      + 0.12 * Math.sin(TWO * freq * 2 * tau);         // soft octave partial
+    const lfo = (tau) => 0.85 + 0.15 * Math.sin(TWO * tau / D);  // one cycle per loop → seamless
+    for (let i = 0; i < n; i++) {
+      const tau = kind === "intro" ? (i / rate) - T : i / rate;
+      let fade = 1;
+      if (kind === "intro") { const x = i / n; fade = x * x * (3 - 2 * x); }  // smoothstep 0 → 1
+      const s = fade * lfo(tau) * wave(tau);
+      v.setInt16(44 + i * 2, Math.max(-1, Math.min(1, s * 0.72)) * 32767, true);
+    }
+    return URL.createObjectURL(new Blob([buf], { type: "audio/wav" }));
+  }
+
+  // ---- Audio engine ------------------------------------------------------
+  // Primary route: a looping WAV in an <audio> element — what real visitors
+  // get, because it registers as media playback (survives screen lock,
+  // bypasses the iOS mute switch, appears on the lock screen).
+  // Fallback: a live Web Audio synth, for restricted embeds (e.g. the
+  // sandboxed preview iframe) where media-element playback is blocked.
+  async function startEngine(note) {
+    // Ask for a "playback" audio session where the API exists
+    // (Audio Session API): keeps sound alive on iOS despite the mute switch.
+    try { if (navigator.audioSession) navigator.audioSession.type = "playback"; } catch (e) {}
+
+    let a, urls = [];
+    try {
+      a = new Audio();
+      a.playsInline = true;
+      a.setAttribute("playsinline", "");
+      a.src = makeToneWav(note.freq, "intro");            // fades in over 3 s
+      urls.push(a.src);
+      await a.play();
+      // When the intro ends, hand over to the seamless loop on the same
+      // element (the classic "playlist" hand-off, allowed on iOS once the
+      // first play was user-triggered).
+      a.addEventListener("ended", function () {
+        a.loop = true;
+        a.src = makeToneWav(note.freq, "loop");
+        urls.push(a.src);
+        a.play().catch(function () {
+          // If a locked-down browser blocks the hand-off, retry at the next
+          // sign of the user: a touch, or the tab becoming visible again.
+          const retry = () => a.play().catch(() => {});
+          document.addEventListener("touchend", retry, { once: true, passive: true });
+          document.addEventListener("click", retry, { once: true });
+          document.addEventListener("visibilitychange", retry, { once: true });
+        });
+      }, { once: true });
+      return {
+        type: "element",
+        stop: function () { a.pause(); a.src = ""; urls.forEach(u => URL.revokeObjectURL(u)); }
+      };
+    } catch (err) {
+      if (a) { a.src = ""; }
+      urls.forEach(u => URL.revokeObjectURL(u));
+    }
+
+    // Fallback: the same sound, generated live with oscillators.
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (ctx.state === "suspended") await ctx.resume();
+
+    const master = ctx.createGain();
+    master.gain.setValueAtTime(0.0001, ctx.currentTime);                 // fade in…
+    master.gain.exponentialRampToValueAtTime(0.43, ctx.currentTime + 3); // …over 3 s
+    const lfo = ctx.createOscillator();
+    const lfoDepth = ctx.createGain();
+    lfo.frequency.value = 0.125;                   // one cycle per 8-second "loop"
+    lfoDepth.gain.value = 0.075;                   // ≈ 15% breathing
+    lfo.connect(lfoDepth).connect(master.gain);
+    lfo.start();
+
+    [[note.freq, 0.55], [note.freq + 0.35, 0.45], [note.freq * 2, 0.12]]
+      .forEach(function (p) {
+        const o = ctx.createOscillator();
+        const g = ctx.createGain();
+        o.frequency.value = p[0];
+        g.gain.value = p[1];
+        o.connect(g).connect(master);
+        o.start();
+      });
+
+    master.connect(ctx.destination);
+    return {
+      type: "webaudio",
+      stop: function () { try { ctx.close(); } catch (e) {} }
+    };
+  }
+
+  async function start() {
+    stop(false);
+    current = POOL[Math.floor(Math.random() * POOL.length)];
+    try {
+      engine = await startEngine(current);
+    } catch (e) {
+      engine = null;
+      render(false);
+      status.textContent = "Audio could not start here — tap the circle again.";
+      return;
+    }
+
+    // Show up on the lock screen; playback survives screen lock.
+    if (engine.type === "element" && "mediaSession" in navigator) {
+      try {
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title: "Your sound · " + current.name,
+          artist: "Chromatic Field",
+          album: "hold the phone, walk, listen"
+        });
+      } catch (e) {}
+    }
+
+    render(true);
+    requestWakeLock();
+  }
+
+  function stop(reset) {
+    if (engine) { engine.stop(); engine = null; }
+    if (reset) render(false);
+  }
+
+  function render(playing) {
+    if (!playing) {
+      disc.classList.remove("playing");
+      disc.innerHTML = '<div class="hint" id="discHint">Tap to receive<br>your sound</div>';
+      reroll.style.display = leave.style.display = "none";
+      status.textContent = "";
+      return;
+    }
+    disc.style.setProperty("--halo", "hsla(" + current.hue + ", 85%, 62%, 0.35)");
+    disc.style.borderColor = "hsla(" + current.hue + ", 80%, 65%, 0.5)";
+    disc.classList.add("playing");
+    disc.innerHTML =
+      '<div class="note" style="color:hsl(' + current.hue + ',85%,72%)">' + current.name + '</div>' +
+      '<div class="hz">' + current.freq.toFixed(1) + ' Hz</div>';
+    reroll.style.display = leave.style.display = "inline-block";
+    status.innerHTML = "You are part of the piece.<br>Walk around — the room changes what you hear.<br>Use your volume buttons to set your loudness.";
+  }
+
+  // ---- Keep the screen on where supported (iOS 16.4+) -------------------
+  async function requestWakeLock() {
+    try {
+      wakeLock = await navigator.wakeLock.request("screen");
+    } catch (e) { /* older devices: audio still loops after lock */ }
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && engine) requestWakeLock();
+  });
+
+  disc.addEventListener("click", () => { if (!engine) start(); });
+  disc.addEventListener("keydown", (e) => { if (e.key === "Enter" && !engine) start(); });
+  reroll.addEventListener("click", start);
+  leave.addEventListener("click", () => stop(true));
+})();
+</script>
+</body>
+</html>
