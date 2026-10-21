@@ -57,7 +57,7 @@
   <h1>Chromatic Field</h1>
   <div class="sub">a sound installation</div>
 
-  <div class="disc" id="disc" role="button" tabindex="0">
+  <div class="disc" id="disc" role="button" tabindex="0" aria-label="Receive a sound" aria-pressed="false">
     <div class="hint" id="discHint">Tap to receive<br>your sound</div>
   </div>
 
@@ -66,7 +66,7 @@
     <button class="btn" id="leave" style="display:none">Leave quietly</button>
   </div>
 
-  <div class="status" id="status"></div>
+  <div class="status" id="status" aria-live="polite"></div>
 
 <script>
 (function () {
@@ -74,7 +74,7 @@
   // Chord tones only — C E G B D — so every visitor adds a consonant
   // voice. Kept above ~C4 because phone speakers roll off below ~300 Hz.
   const NAMES = ["C","C♯","D","D♯","E","F","F♯","G","G♯","A","A♯","B"];
-  const CHORD = [0, 4, 7, 11, 14, 16, 18, 19, 21, 23, 26];  // C4 E4 G4 B4 D5 · C5 E5 G5 F♯5 A5 B5 D6
+  const CHORD = [0, 4, 7, 11, 14, 16, 19, 23, 26];  // C4 E4 G4 B4 D5 · C5 E5 G5 B5 D6
   const POOL = CHORD.map(function (k) {
     return {
       freq: 261.6256 * Math.pow(2, k / 12),
@@ -180,6 +180,12 @@
     // Fallback: the same sound, generated live with oscillators.
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
     if (ctx.state === "suspended") await ctx.resume();
+    // Autoplay policy can block Web Audio too: a suspended context would
+    // leave the page silently "playing". Treat that as a start failure.
+    if (ctx.state !== "running") {
+      try { ctx.close(); } catch (e) {}
+      throw new Error("Web Audio blocked");
+    }
 
     const master = ctx.createGain();
     master.gain.value = 0.43;                          // full voice immediately — no fade-in
@@ -207,9 +213,21 @@
     };
   }
 
+  // ---- Note assignment ---------------------------------------------------
+  // Rotate through the pool by arrival second instead of uniform random:
+  // with few visitors, random assignment can stack several phones on one
+  // note and leave the chord without a root. Rotation spreads consecutive
+  // arrivals across the chord; a reroll in the same second steps to the
+  // next note so "receive another sound" always changes the pitch.
+  function pickNote(prev) {
+    const idx = Math.floor(Date.now() / 1000) % POOL.length;
+    if (prev && POOL[idx] === prev) return POOL[(idx + 1) % POOL.length];
+    return POOL[idx];
+  }
+
   async function start() {
     stop(false);
-    current = POOL[Math.floor(Math.random() * POOL.length)];
+    current = pickNote(current);
     try {
       engine = await startEngine(current);
     } catch (e) {
@@ -236,10 +254,12 @@
 
   function stop(reset) {
     if (engine) { engine.stop(); engine = null; }
+    releaseWakeLock();
     if (reset) render(false);
   }
 
   function render(playing) {
+    disc.setAttribute("aria-pressed", playing ? "true" : "false");
     if (!playing) {
       disc.classList.remove("playing");
       disc.innerHTML = '<div class="hint" id="discHint">Tap to receive<br>your sound</div>';
@@ -263,12 +283,20 @@
       wakeLock = await navigator.wakeLock.request("screen");
     } catch (e) { /* older devices: audio still loops after lock */ }
   }
+  function releaseWakeLock() {
+    if (wakeLock) { try { wakeLock.release(); } catch (e) {} wakeLock = null; }
+  }
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible" && engine) requestWakeLock();
   });
 
   disc.addEventListener("click", () => { if (!engine) start(); });
-  disc.addEventListener("keydown", (e) => { if (e.key === "Enter" && !engine) start(); });
+  disc.addEventListener("keydown", (e) => {
+    if ((e.key === "Enter" || e.key === " ") && !engine) {
+      e.preventDefault();
+      start();
+    }
+  });
   reroll.addEventListener("click", start);
   leave.addEventListener("click", () => stop(true));
 })();

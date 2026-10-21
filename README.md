@@ -13,7 +13,7 @@ the space — and different for every person.
 - A single self-contained HTML page; no backend, no dependencies.
 - The tone is generated on the fly: an exactly-periodic 8-second loop (two
   slightly detuned sines plus a soft octave partial) rendered to a long WAV
-  blob (16 cycles) — the loop wrap is mathematically seamless.
+  blob (24 cycles) — the loop wrap is mathematically seamless.
 - Playback uses an HTML audio element, so the sound survives screen lock and
   the iOS mute switch; the page appears on the lock screen via the Media
   Session API.
